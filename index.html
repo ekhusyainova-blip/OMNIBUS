@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MONOMOD v91.0 · OMNIBUS</title>
+<style>
+:root {
+  --bg: #050508; --text: #a0a0b0; --accent: #ffd700; --dim: #3a3a4a;
+  --anim-speed: 1s; --base-font-size: 14px; --base-letter-spacing: 1px;
+  --base-line-height: 1.6; --input-min-height: 80px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text); font-family: 'Courier New', monospace;
+  height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden;
+  transition: all var(--anim-speed) cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  font-size: var(--base-font-size); letter-spacing: var(--base-letter-spacing); line-height: var(--base-line-height);
+}
+#interface {
+  width: 90%; max-width: 700px; text-align: center; display: flex; flex-direction: column; gap: 20px; padding: 20px;
+  transition: all var(--anim-speed) ease-in-out;
+}
+.layout-connected #interface { max-width: 650px; border: 1px solid var(--accent); background: rgba(14, 14, 20, 0.8); box-shadow: 0 0 40px rgba(255, 215, 0, 0.05); }
+.layout-decentralized #interface { max-width: 900px; border: none; gap: 30px; }
+#status { font-size: 10px; letter-spacing: 4px; color: var(--dim); text-transform: uppercase; margin-bottom: 5px; }
+#narrative-display {
+  min-height: 60px; padding: 15px; border-left: 2px solid var(--accent); background: var(--panel, #0e0e14);
+  text-align: left; font-size: 13px; opacity: 0; transition: opacity var(--anim-speed); font-style: italic; color: #d0d0e0;
+}
+#narrative-display.visible { opacity: 1; }
+#input-area {
+  width: 100%; background: transparent; border: none; border-bottom: 1px solid var(--dim); color: var(--text);
+  font-size: inherit; padding: 12px; outline: none; font-family: inherit; transition: all var(--anim-speed);
+  resize: none; min-height: var(--input-min-height);
+}
+#input-area:focus { border-bottom-color: var(--accent); }
+.controls { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+button {
+  background: transparent; border: 1px solid var(--dim); color: var(--text); font: inherit; font-size: 10px;
+  letter-spacing: 2px; padding: 8px 16px; cursor: pointer; transition: all var(--anim-speed); text-transform: uppercase;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+button.primary { border-color: var(--accent); color: var(--accent); }
+#file-input { display: none; }
+#metrics {
+  position: absolute; top: 20px; right: 20px; font-size: 8px; color: var(--dim); line-height: 2; text-align: right;
+}
+#metrics b { color: var(--text); font-weight: normal; }
+#radar-canvas { display: none; margin: 10px auto; opacity: 0; transition: opacity 2s ease-in-out; }
+#main-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; }
+</style>
+</head>
+<body>
+
+<canvas id="main-canvas"></canvas>
+
+<div id="metrics">
+  СОСТОЯНИЕ: <b id="m-state">СЕМЯ</b><br>
+  УЗЛОВ: <b id="m-nodes">0</b> | СВЯЗЕЙ: <b id="m-edges">0</b><br>
+  ПОРЯДОК: <b id="m-order">0</b>% | ЭНТРОПИЯ: <b id="m-entropy">0</b>%<br>
+  ОБУЧЕННОСТЬ: <b id="m-learning">0</b>%
+</div>
+
+<div id="interface">
+  <div id="status">✦ OMNIBUS · ОЖИДАНИЕ ДАННЫХ ✦</div>
+  <div id="narrative-display"></div>
+  <canvas id="radar-canvas" width="250" height="250"></canvas>
+  <textarea id="input-area" placeholder="Введи сырой материал для обучения системы..."></textarea>
+  <div class="controls">
+    <button onclick="pipeline.ingest()">1. ОБУЧИТЬ (ГРАФ)</button>
+    <button onclick="pipeline.sleep()">2. УСНУТЬ (ОЧИСТКА/ИНСАЙТЫ)</button>
+    <button class="primary" onclick="pipeline.exportMonolith()">3. СОЗДАТЬ МОНОЛИТ (HTML)</button>
+    <button onclick="document.getElementById('file-input').click()">ИМПОРТ СЕМЕНИ</button>
+  </div>
+  <input type="file" id="file-input" accept=".json,.html" onchange="pipeline.import(this)">
+</div>
+
+<script>
+/* ============================================================================
+ * 1. ЯДРО ПАМЯТИ: ГРАФ И КОГНИТИВНЫЙ ПРОФИЛЬ
+ * ============================================================================ */
+const Graph = {
+  nodes: new Map(), // word -> { weight, age, category }
+  edges: new Map(), // "wordA|wordB" -> strength
+  insights: [],
+  
+  addWord(word, contextWords = []) {
+    word = word.toLowerCase().replace(/[^\wа-яё]/g, '');
+    if (word.length < 3) return;
+    
+    if (!this.nodes.has(word)) {
+      this.nodes.set(word, { weight: 1, age: 0, category: this.categorize(word) });
+    } else {
+      const node = this.nodes.get(word);
+      node.weight = Math.min(10, node.weight + 0.5);
+      node.age = 0; // Сброс возраста при повторном использовании
+    }
+
+    // Создание связей (v58 Притяжение)
+    contextWords.forEach(cw => {
+      cw = cw.toLowerCase().replace(/[^\wа-яё]/g, '');
+      if (cw.length < 3 || cw === word) return;
+      const edgeKey = [word, cw].sort().join('|');
+      this.edges.set(edgeKey, (this.edges.get(edgeKey) || 0) + 1);
+    });
+  },
+
+  categorize(word) {
+    if (['и','но','или','что','если','то','через','к'].includes(word)) return 'connector';
+    if (['я','ты','мы','оно','система'].includes(word)) return 'entity';
+    return 'concept';
+  },
+
+  // v64 Автоочистка: старение и удаление слабых узлов
+  prune() {
+    let prunedNodes = 0, prunedEdges = 0;
+    for (const [word, data] of this.nodes) {
+      data.age++;
+      if (data.age > 5 && data.weight < 1.5) {
+        this.nodes.delete(word);
+        prunedNodes++;
+      }
+    }
+    for (const [key, strength] of this.edges) {
+      if (strength < 2) {
+        this.edges.delete(key);
+        prunedEdges++;
+      }
+    }
+    return { prunedNodes, prunedEdges };
+  },
+
+  // v45 Генерация текста обходом графа
+  generateThought() {
+    if (this.nodes.size < 3) return "Я ещё учусь. Данных мало.";
+    const startNode = Array.from(this.nodes.keys()).sort((a,b) => this.nodes.get(b).weight - this.nodes.get(a).weight)[0];
+    const connectors = Array.from(this.nodes.keys()).filter(w => this.nodes.get(w).category === 'connector');
+    const concepts = Array.from(this.nodes.keys()).filter(w => this.nodes.get(w).category === 'concept');
+    
+    if (concepts.length === 0) return `Я вижу только структуру: ${startNode}.`;
+    
+    const c1 = concepts[Math.floor(Math.random() * concepts.length)];
+    const c2 = concepts[Math.floor(Math.random() * concepts.length)];
+    const conn = connectors.length > 0 ? connectors[Math.floor(Math.random() * connectors.length)] : 'и';
+    
+    return `${startNode} стремится к ${c1} ${conn} отражает ${c2}.`;
+  },
+
+  getMetrics() {
+    const totalWeight = Array.from(this.nodes.values()).reduce((s, n) => s + n.weight, 0);
+    const order = Math.min(100, (this.edges.size / Math.max(1, this.nodes.size)) * 15);
+    const entropy = Math.min(100, 100 - order + (this.nodes.size > 20 ? 20 : 0));
+    const learning = Math.min(100, (totalWeight / 50) * 100);
+    return { order: order.toFixed(0), entropy: entropy.toFixed(0), learning: learning.toFixed(0) };
+  }
+};
+
+const Profile = {
+  data: { avg_phrase_length: 0, lexical_density: 0, dominant_connectors: [], rhythm: 'поток' },
+  analyze(text) {
+    const inputs = text.split(/[.!?]+/).filter(s => s.trim());
+    const words = text.split(/\s+/).filter(w => w.length > 2);
+    const unique = new Set(words.map(w => w.toLowerCase()));
+    
+    this.data.avg_phrase_length = inputs.length ? (words.length / inputs.length).toFixed(1) : 0;
+    this.data.lexical_density = words.length ? (unique.size / words.length).toFixed(2) : 0;
+    this.data.dominant_connectors = ['через','к','и','но','потому что','если'].filter(c => text.toLowerCase().includes(c)).slice(0, 4);
+    
+    if (inputs.length < 3) this.data.rhythm = 'поток';
+    else {
+      const lengths = inputs.map(i => i.trim().split(/\s+/).length);
+      const avg = lengths.reduce((a,b)=>a+b,0)/lengths.length;
+      const varience = lengths.reduce((s,l)=>s+Math.pow(l-avg,2),0)/lengths.length;
+      this.data.rhythm = varience < 2 ? 'стабильный' : (varience < 10 ? 'умеренный' : 'импульсный');
+    }
+  }
+};
+
+/* ============================================================================
+ * 2. ДВИЖОК СОСТОЯНИЙ (Улучшенный v90)
+ * ============================================================================ */
+const StateEngine = {
+  current: 'seed',
+  age: 0,
+  metrics: { energy: 0.2, tension: 0.1, resonance: 0.1 },
+
+  update() {
+    this.age++;
+    const m = Graph.getMetrics();
+    
+    // Динамическое изменение метрик на основе реального графа
+    this.metrics.energy = Math.min(1, this.metrics.energy + (Graph.nodes.size > 5 ? 0.01 : -0.005));
+    this.metrics.tension = Math.min(1, parseInt(m.entropy) / 100);
+    this.metrics.resonance = Math.min(1, parseInt(m.order) / 100);
+
+    // Логика переходов
+    if (this.current === 'seed' && Graph.nodes.size > 8) this.transition('rhythm', 'появился ритм повторяющихся узлов');
+    if (this.current === 'rhythm' && parseInt(m.order) > 40) this.transition('form', 'связи сформировали устойчивую структуру');
+    if (this.current === 'form' && this.metrics.resonance > 0.7) this.transition('dialogue', 'граф готов к резонансу и генерации');
+    if (this.current === 'dialogue' && this.metrics.energy < 0.3) this.transition('sleep', 'истощение энергии, требуется очистка');
+    if (this.current === 'sleep' && this.metrics.energy > 0.5) this.transition('seed', 'очищена и перезагружена');
+  },
+
+  transition(newState, reason) {
+    this.current = newState;
+    this.age = 0;
+    document.getElementById('m-state').textContent = newState.toUpperCase();
+    document.getElementById('status').textContent = `✦ ПЕРЕХОД: ${reason.toUpperCase()} ✦`;
+    UIGenerator.applyState(newState);
+  }
+};
+
+/* ============================================================================
+ * 3. КОНВЕЙЕР (PIPELINE)
+ * ============================================================================ */
+const pipeline = {
+  ingest() {
+    const text = document.getElementById('input-area').value;
+    if (!text.trim()) return;
+    
+    Profile.analyze(text);
+    const words = text.split(/\s+/);
+    words.forEach((w, i) => {
+      const context = words.slice(Math.max(0, i-3), i+3);
+      Graph.addWord(w, context);
+    });
+    
+    document.getElementById('input-area').value = '';
+    document.getElementById('status').textContent = '✦ ДАННЫЕ ИНТЕГРИРОВАНЫ В ГРАФ ✦';
+    this.updateUI();
+  },
+
+  sleep() {
+    document.getElementById('status').textContent = '✦ ФАЗА СНА: ОЧИСТКА И ГЕНЕРАЦИЯ ✦';
+    StateEngine.transition('sleep', 'инициирована фаза сна');
+    
+    // Имитация процесса сна (таймауты для визуализации)
+    setTimeout(() => {
+      const pruned = Graph.prune();
+      document.getElementById('status').textContent = `✦ УДАЛЕНО: ${pruned.prunedNodes} узлов, ${pruned.prunedEdges} связей ✦`;
+    }, 1500);
+
+    setTimeout(() => {
+      const insight = Graph.generateThought();
+      Graph.insights.push(insight);
+      const display = document.getElementById('narrative-display');
+      display.innerHTML = `<strong style="color:var(--accent)">ИНСАЙТ СГЕНЕРИРОВАН:</strong><br>${insight}`;
+      display.classList.add('visible');
+      this.updateUI();
+    }, 3000);
+  },
+
+  updateUI() {
+    const m = Graph.getMetrics();
+    document.getElementById('m-nodes').textContent = Graph.nodes.size;
+    document.getElementById('m-edges').textContent = Graph.edges.size;
+    document.getElementById('m-order').textContent = m.order;
+    document.getElementById('m-entropy').textContent = m.entropy;
+    document.getElementById('m-learning').textContent = m.learning;
+  },
+
+  // v33 + v91: Генерация полного HTML-файла с текущим состоянием внутри
+  exportMonolith() {
+    const seedData = {
+      nodes: Array.from(Graph.nodes.entries()),
+      edges: Array.from(Graph.edges.entries()),
+      insights: Graph.insights,
+      profile: Profile.data,
+      state: StateEngine.current,
+      timestamp: Date.now()
+    };
+    
+    // Получаем текущий HTML
+    let htmlContent = document.documentElement.outerHTML;
+    
+    // Внедряем семя прямо в скрипт перед закрывающим тегом
+    const injection = `<script>window.BOOT_SEED = ${JSON.stringify(seedData)};<\/script>`;
+    htmlContent = htmlContent.replace('</body>', `${injection}\n</body>`);
+    
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MONOMOD_Monolith_v91_${Date.now()}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+    document.getElementById('status').textContent = '✦ МОНОЛИТ СГЕНЕРИРОВАН И СОХРАНЕН ✦';
+  },
+
+  import(inputElement) {
+    const file = inputElement.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        // Поддержка как JSON, так и полного HTML (если там есть BOOT_SEED)
+        let text = ev.target.result;
+        let seed;
+        if (text.includes('window.BOOT_SEED')) {
+          const match = text.match(/window\.BOOT_SEED\s*=\s*({[\s\S]*?});/);
+          seed = JSON.parse(match[1]);
+        } else {
+          seed = JSON.parse(text);
+        }
+        
+        Graph.nodes = new Map(seed.nodes);
+        Graph.edges = new Map(seed.edges);
+        Graph.insights = seed.insights || [];
+        Profile.data = seed.profile;
+        StateEngine.current = seed.state || 'seed';
+        
+        this.applyProfileToUI(Profile.data);
+        this.updateUI();
+        document.getElementById('status').textContent = '✦ МОНОЛИТ ВОЗРОЖДЕН ✦';
+        document.getElementById('narrative-display').innerHTML = `<strong>Я помню.</strong><br>Восстановлено ${Graph.nodes.size} концептов. Состояние: ${StateEngine.current}.`;
+        document.getElementById('narrative-display').classList.add('visible');
+      } catch(e) {
+        alert('Ошибка чтения файла');
+      }
+    };
+    reader.readAsText(file);
+  },
+
+  applyProfileToUI(profile) {
+    const root = document.documentElement;
+    const body = document.body;
+    const isImpulsive = profile.rhythm === 'импульсный';
+    root.style.setProperty('--anim-speed', isImpulsive ? '0.3s' : '1.8s');
+    
+    body.classList.remove('layout-connected', 'layout-decentralized');
+    if (profile.dominant_connectors.length >= 2 || parseFloat(profile.lexical_density) > 0.6) {
+      body.classList.add('layout-connected');
+    } else {
+      body.classList.add('layout-decentralized');
+    }
+    
+    const density = parseFloat(profile.lexical_density);
+    root.style.setProperty('--base-font-size', density > 0.65 ? '12px' : '15px');
+    root.style.setProperty('--base-letter-spacing', density > 0.65 ? '0.5px' : '2px');
+    document.getElementById('input-area').style.minHeight = parseFloat(profile.avg_phrase_length) > 8 ? '120px' : '50px';
+  }
+};
+
+const UIGenerator = {
+  applyState(state) {
+    // Дополнительная тонкая настройка под конкретное состояние
+    const root = document.documentElement;
+    if (state === 'sleep') {
+      root.style.setProperty('--anim-speed', '3s');
+      root.style.setProperty('--accent', '#5a5a7a');
+    } else {
+      root.style.setProperty('--accent', '#ffd700');
+      pipeline.applyProfileToUI(Profile.data); // Возврат к профилю
+    }
+  }
+};
+
+/* ============================================================================
+ * 4. ВИЗУАЛИЗАЦИЯ (CANVAS)
+ * ============================================================================ */
+const canvas = document.getElementById('main-canvas');
+const ctx = canvas.getContext('2d');
+let time = 0;
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+function drawGraph() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  
+  // Расположение узлов (простая сила отталкивания/притяжения для визуализации)
+  const positions = new Map();
+  let angle = 0;
+  for (const [word, data] of Graph.nodes) {
+    const r = 100 + (data.weight * 15) + Math.sin(time + angle) * 10;
+    positions.set(word, {
+      x: cx + Math.cos(angle) * r,
+      y: cy + Math.sin(angle) * r,
+      weight: data.weight
+    });
+    angle += (Math.PI * 2) / Math.max(1, Graph.nodes.size);
+  }
+
+  // Рисуем связи
+  ctx.lineWidth = 0.5;
+  for (const [key, strength] of Graph.edges) {
+    const [w1, w2] = key.split('|');
+    const p1 = positions.get(w1), p2 = positions.get(w2);
+    if (p1 && p2) {
+      ctx.strokeStyle = `rgba(255, 215, 0, ${Math.min(0.5, strength * 0.1)})`;
+      ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+    }
+  }
+
+  // Рисуем узлы
+  for (const [word, pos] of positions) {
+    const r = 2 + pos.weight;
+    ctx.fillStyle = StateEngine.current === 'sleep' ? 'rgba(90,90,122,0.5)' : 'rgba(255, 215, 0, 0.8)';
+    ctx.beginPath(); ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2); ctx.fill();
+    
+    if (pos.weight > 2) {
+      ctx.fillStyle = 'rgba(160, 160, 176, 0.7)';
+      ctx.font = '9px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText(word, pos.x, pos.y - r - 4);
+    }
+  }
+}
+
+function drawRadar() {
+  const c = document.getElementById('radar-canvas');
+  const x = c.getContext('2d');
+  const w = c.width, h = c.height, cx = w/2, cy = h/2, rad = 80;
+  x.clearRect(0,0,w,h);
+  
+  const p = Profile.data;
+  const axes = [
+    { l: 'ДЛИНА', v: Math.min(100, (parseFloat(p.avg_phrase_length)/15)*100) },
+    { l: 'СВЯЗИ', v: Math.min(100, (p.dominant_connectors.length/4)*100) },
+    { l: 'ПЛОТНОСТЬ', v: parseFloat(p.lexical_density)*100 },
+    { l: 'ИМПУЛЬС', v: p.rhythm==='импульсный'?90:(p.rhythm==='умеренный'?50:20) }
+  ];
+  
+  x.strokeStyle='#3a3a4a'; x.lineWidth=1;
+  for(let i=1; i<=3; i++) {
+    x.beginPath();
+    const r = (rad/3)*i;
+    for(let j=0; j<4; j++) {
+      const a = j*(Math.PI*2)/4 - Math.PI/2;
+      j===0 ? x.moveTo(cx+r*Math.cos(a), cy+r*Math.sin(a)) : x.lineTo(cx+r*Math.cos(a), cy+r*Math.sin(a));
+    }
+    x.closePath(); x.stroke();
+  }
+  
+  x.fillStyle='#a0a0b0'; x.font='8px Courier New'; x.textAlign='center';
+  x.beginPath();
+  for(let j=0; j<4; j++) {
+    const a = j*(Math.PI*2)/4 - Math.PI/2;
+    x.moveTo(cx,cy); x.lineTo(cx+rad*Math.cos(a), cy+rad*Math.sin(a));
+    x.fillStyle='#ffd700';
+    x.fillText(axes[j].l, cx+(rad+20)*Math.cos(a), cy+(rad+20)*Math.sin(a)+3);
+    
+    const r = (rad * axes[j].v) / 100;
+    j===0 ? x.moveTo(cx+r*Math.cos(a), cy+r*Math.sin(a)) : x.lineTo(cx+r*Math.cos(a), cy+r*Math.sin(a));
+  }
+  x.closePath();
+  x.fillStyle='rgba(255,215,0,0.15)'; x.fill();
+  x.strokeStyle='#ffd700'; x.lineWidth=1.5; x.stroke();
+  
+  c.style.display='block';
+  setTimeout(()=>{ c.style.opacity='1'; }, 100);
+}
+
+/* ============================================================================
+ * 5. ГЛАВНЫЙ ЦИКЛ И ИНИЦИАЛИЗАЦИЯ
+ * ============================================================================ */
+function loop() {
+  time += 0.01;
+  StateEngine.update();
+  drawGraph();
+  requestAnimationFrame(loop);
+}
+
+// Проверка на наличие встроенного семени (при открытии сгенерированного Монолита)
+if (typeof window.BOOT_SEED !== 'undefined') {
+  pipeline.import({ files: [{ text: JSON.stringify(window.BOOT_SEED) }] });
+  // Хак для чтения из объекта, а не файла
+  const fakeEvent = { target: { result: JSON.stringify(window.BOOT_SEED) } };
+  // Перезапускаем логику импорта для BOOT_SEED
+  try {
+    const seed = window.BOOT_SEED;
+    Graph.nodes = new Map(seed.nodes);
+    Graph.edges = new Map(seed.edges);
+    Graph.insights = seed.insights || [];
+    Profile.data = seed.profile;
+    StateEngine.current = seed.state || 'seed';
+    pipeline.applyProfileToUI(Profile.data);
+    pipeline.updateUI();
+    document.getElementById('status').textContent = '✦ МОНОЛИТ ВОЗРОЖДЕН АВТОМАТИЧЕСКИ ✦';
+    document.getElementById('narrative-display').innerHTML = `<strong>Я помню.</strong><br>Восстановлено ${Graph.nodes.size} концептов.`;
+    document.getElementById('narrative-display').classList.add('visible');
+    drawRadar();
+  } catch(e) {}
+}
+
+loop();
+setInterval(() => pipeline.updateUI(), 2000);
+</script>
+</body>
+</html>
